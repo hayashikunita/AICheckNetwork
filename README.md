@@ -2,10 +2,19 @@
 
 > ⚠️ **このプロジェクトは現在開発途中です。機能やUIは今後変更される可能性があります。バグや未実装機能が含まれる場合があります。ご理解の上ご利用ください。**
 
-PC のネットワーク情報を確認・監視できる Web アプリケーションです。
+PC のネットワーク情報を確認・監視できる ローカル完結のアプリケーションです。
 初心者にもわかりやすい解説付きで、専門知識がなくても使えます。
+煩わしいWiresharkのパケット解析を自動化します。
+
+<img width="1886" height="911" alt="スクリーンショット 2025-11-21 001811" src="https://github.com/user-attachments/assets/0afb4f2e-d7bc-47a3-9873-29d978cb39c5" />
+
+<img width="1894" height="920" alt="スクリーンショット 2025-11-21 001752" src="https://github.com/user-attachments/assets/128038b3-8aaf-4e39-8f65-f24eaf995e36" />
+
+<img width="1880" height="911" alt="スクリーンショット 2025-11-21 001741" src="https://github.com/user-attachments/assets/6b785db4-8e60-4641-8a96-9cf3418d48e9" />
+
 
 ## ✨ 主な機能
+
 
 ### 📡 ネットワーク情報
 - ホスト名、プラットフォーム情報の表示
