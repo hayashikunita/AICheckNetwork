@@ -19,36 +19,27 @@ PC のネットワーク情報を確認・監視できる ローカル完結の�
 - [⚠️ 既知の制約と今後の改善](#-既知の制約と今後の改善)
 - [📝 ライセンス / 貢献](#-ライセンス)
 
-<img width="1886" height="911" alt="スクリーンショット 2025-11-21 001811" src="https://github.com/user-attachments/assets/0afb4f2e-d7bc-47a3-9873-29d978cb39c5" />
-
-<img width="1894" height="920" alt="スクリーンショット 2025-11-21 001752" src="https://github.com/user-attachments/assets/128038b3-8aaf-4e39-8f65-f24eaf995e36" />
-
-<img width="1880" height="911" alt="スクリーンショット 2025-11-21 001741" src="https://github.com/user-attachments/assets/6b785db4-8e60-4641-8a96-9cf3418d48e9" />
-
-
-## ✨ 主な機能
-
-
-### 📡 ネットワーク情報
+## ✨ 主な機能<img width="1887" height="905" alt="スクリーンショット 2025-11-22 180916" src="https://github.com/user-attachments/assets/0a3f78f5-8804-449a-9240-bac36c61a113" />
 - ホスト名、プラットフォーム情報の表示
 - 全ネットワークインターフェースの詳細表示
 - IPv4/IPv6 アドレス、MACアドレスの確認
 - 各項目の初心者向け解説付き
 
-### 📶 WiFi情報
+## ✨ Wifi情報<img width="1898" height="911" alt="スクリーンショット 2025-11-22 180928" src="https://github.com/user-attachments/assets/b97db3a9-bb85-4a5c-a2eb-714c591fd366" />
 - 接続中のWiFiネットワーク情報
 - シグナル強度、チャネル、無線タイプの表示
 - 利用可能なネットワーク一覧
 - セキュリティ情報の確認
 
-### 📊 トラフィック統計
+## 📡 ネットワーク情報<img width="1892" height="914" alt="スクリーンショット 2025-11-22 180942" src="https://github.com/user-attachments/assets/cd18165b-cec7-4387-9fdc-bb2c1e8fbc8b" />
 - リアルタイムのネットワーク統計
 - 送受信データ量の表示
 - パケット数のカウント
 - エラー・ドロップ数の監視
 - 5秒ごとの自動更新
 
-### 🔍 パケットキャプチャ
+## 📡 パケットキャプチャ
+https://github.com/user-attachments/assets/df74eb44-ccfc-410d-91e1-130e8e48295d
 - **Wireshark不要**の簡単パケット解析
 - リアルタイムパケット監視（TCP/UDP/ICMP/ARP）
 - 通信内容の詳細表示と初心者向け解説
@@ -65,7 +56,11 @@ NOTE: 停止の改善
 -----------------
 以前は内部で scapy.sniff(..., stop_filter=...) を使っていたため、停止リクエストを送ってもネットワークに新しいパケットが到着しないと stop_filter が評価されず、キャプチャがすぐに止まらない（裏で継続する）ことがありました。本プロジェクトではこの問題を解消するために AsyncSniffer を導入しました。これにより、停止 API が呼ばれたタイミングで sniffer.stop() を直接呼び出せるようになり、即時停止が可能になっています。
 
-### 💬 相談チャットボット
+## 📡 パケットキャプチャ統計
+https://github.com/user-attachments/assets/07af1bc5-4c91-48fa-bb56-2dfa3990880f
+
+## 💬 相談チャットボット
+https://github.com/user-attachments/assets/35c5ab45-1f91-4be2-ae6e-457f0645d392
 - ネットワークやパケットキャプチャに関する質問にAIが即座に回答
 - よくある質問ボタンでワンクリック質問
 - パケット統計データと連携した自動分析
