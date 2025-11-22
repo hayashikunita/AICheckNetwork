@@ -4,7 +4,8 @@ import socket
 import platform
 import psutil
 from datetime import datetime
-from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap
+from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap, AsyncSniffer
+import time
 import threading
 import json
 import os
@@ -20,6 +21,7 @@ is_capturing = False
 capture_thread = None
 capture_session_id = None
 stop_capture_flag = False
+capture_sniffer = None
 
 def get_network_info():
     """ネットワーク情報を取得"""
@@ -481,28 +483,44 @@ def get_packet_explanation(packet_info):
     return ' | '.join(explanation) if explanation else 'その他の通信'
 
 def capture_packets_thread(interface, packet_count):
-    """パケットキャプチャを別スレッドで実行"""
-    global is_capturing, stop_capture_flag
+    """パケットキャプチャを別スレッドで実行（AsyncSniffer導入）"""
+    global is_capturing, stop_capture_flag, capture_sniffer
     stop_capture_flag = False
-    
+
     print(f"パケットキャプチャ開始: {packet_count}個のパケットを収集")
-    
+
     try:
-        # sniffを実行
-        packets_captured = sniff(
-            iface=interface, 
-            prn=packet_callback, 
-            count=packet_count, 
+        capture_sniffer = AsyncSniffer(
+            iface=interface,
+            prn=packet_callback,
             store=False,
-            timeout=60,  # 60秒でタイムアウト
-            stop_filter=lambda x: stop_capture_flag
+            count=packet_count,
+            timeout=None,
         )
+        capture_sniffer.start()
+
+        # Wait until running stops; call stop if stop flag is set
+        while capture_sniffer.running:
+            if stop_capture_flag and capture_sniffer.running:
+                try:
+                    capture_sniffer.stop()
+                except Exception:
+                    pass
+                break
+            time.sleep(0.1)
+
         print(f"パケットキャプチャ終了: {len(capture_packets)}個のパケットを収集しました")
     except KeyboardInterrupt:
         print("パケットキャプチャが中断されました")
     except Exception as e:
         print(f"キャプチャエラー: {e}")
     finally:
+        if capture_sniffer and capture_sniffer.running:
+            try:
+                capture_sniffer.stop()
+            except Exception:
+                pass
+        capture_sniffer = None
         is_capturing = False
         stop_capture_flag = False
         print("キャプチャスレッドが正常に終了しました")
@@ -566,6 +584,14 @@ def stop_capture():
     # 停止フラグをセット
     stop_capture_flag = True
     is_capturing = False
+
+    # If we have an active AsyncSniffer instance, stop it so sniff returns promptly
+    global capture_sniffer
+    if capture_sniffer:
+        try:
+            capture_sniffer.stop()
+        except Exception as e:
+            print(f"capture_sniffer.stop() エラー: {e}")
     
     # スレッドが終了するまで少し待つ
     if capture_thread and capture_thread.is_alive():

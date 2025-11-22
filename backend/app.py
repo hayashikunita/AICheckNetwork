@@ -14,7 +14,8 @@ import tempfile
 from fastapi import Request
 import asyncio
 import requests
-from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap
+from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap, AsyncSniffer
+import time
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -47,6 +48,7 @@ capture_packets = []
 capture_raw_packets = []
 is_capturing = False
 capture_thread = None
+capture_sniffer = None
 capture_session_id = None
 stop_capture_flag = False
 
@@ -484,31 +486,47 @@ def get_packet_explanation(packet_info):
     return ' | '.join(explanation) if explanation else 'その他の通信'
 
 def capture_packets_thread(interface, packet_count):
-    """パケットキャプチャを別スレッドで実行"""
-    global is_capturing, stop_capture_flag
+    """パケットキャプチャを別スレッドで実行（AsyncSnifferを使い即時停止をサポート）"""
+    global is_capturing, stop_capture_flag, capture_sniffer
     stop_capture_flag = False
-    
+
     print(f"パケットキャプチャ開始: {packet_count}個のパケットを収集")
-    
-    def should_stop(packet):
-        """停止判定関数（デバッグ出力なし）"""
-        return stop_capture_flag
-    
+
     try:
-        packets_captured = sniff(
-            iface=interface, 
-            prn=packet_callback, 
-            count=packet_count, 
+        # Use AsyncSniffer to allow immediate stop() from another thread
+        capture_sniffer = AsyncSniffer(
+            iface=interface,
+            prn=packet_callback,
             store=False,
-            timeout=360,
-            stop_filter=should_stop
+            count=packet_count,
+            timeout=None
         )
+        capture_sniffer.start()
+
+        # Wait until sniffer stops (either reached count or stopped externally)
+        while capture_sniffer.running:
+            # Check stop flag and if set, call stop() to interrupt sniffing immediately
+            if stop_capture_flag and capture_sniffer.running:
+                try:
+                    capture_sniffer.stop()
+                except Exception:
+                    pass
+                break
+            time.sleep(0.1)
+
         print(f"パケットキャプチャ終了: {len(capture_packets)}個のパケットを収集しました")
     except KeyboardInterrupt:
         print("パケットキャプチャが中断されました")
     except Exception as e:
         print(f"キャプチャエラー: {e}")
     finally:
+        # cleanup
+        if capture_sniffer and capture_sniffer.running:
+            try:
+                capture_sniffer.stop()
+            except Exception:
+                pass
+        capture_sniffer = None
         is_capturing = False
         stop_capture_flag = False
         print("キャプチャスレッドが正常に終了しました")
@@ -563,6 +581,35 @@ async def start_capture(request: Request):
         'session_id': capture_session_id,
         'target_count': packet_count
     }
+
+
+@app.post("/api/capture/stop")
+async def stop_capture(request: Request):
+    """パケットキャプチャを停止（FastAPI版）"""
+    global is_capturing, stop_capture_flag, capture_thread, capture_sniffer
+
+    if not is_capturing and not capture_sniffer:
+        return JSONResponse({'message': 'キャプチャは実行されていません', 'status': 'not_running'})
+
+    print("停止リクエストを受信しました (FastAPI)")
+
+    # set flag for callback and try to stop AsyncSniffer if present
+    stop_capture_flag = True
+    is_capturing = False
+
+    if capture_sniffer:
+        try:
+            capture_sniffer.stop()
+        except Exception as e:
+            print(f"capture_sniffer.stop() エラー: {e}")
+
+    # Wait shortly for thread to finish
+    if capture_thread and capture_thread.is_alive():
+        capture_thread.join(timeout=2.0)
+
+    print(f"キャプチャを停止しました。収集パケット数: {len(capture_packets)}")
+
+    return JSONResponse({'message': 'キャプチャを停止しました', 'status': 'stopped', 'packet_count': len(capture_packets)})
 
 @app.get("/api/capture/packets")
 async def get_packets():
@@ -986,7 +1033,7 @@ async def call_openai_chat(messages):
                     # 'max_tokens': 512,
                     # 'temperature': 0.2
                 },
-                timeout=360
+                timeout=60
             )
             resp.raise_for_status()
             data = resp.json()
