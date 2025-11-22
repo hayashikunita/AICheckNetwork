@@ -6,6 +6,19 @@ PC のネットワーク情報を確認・監視できる ローカル完結の�
 初心者にもわかりやすい解説付きで、専門知識がなくても使えます。
 煩わしいWiresharkのパケット解析を自動化します。
 
+## 目次
+
+- [✨ 主な機能](#-主な機能)
+- [🚀 簡単セットアップ（推奨）](#-簡単セットアップ推奨)
+- [🧪 エンドポイント確認（開発者向けテスト手順）](#-エンドポイント確認開発者向けテスト手順)
+- [🔐 ChatGPT (OpenAI) 設定](#-chatgpt-openai-設定)
+- [📋 フロントエンドの「コピー」機能について](#-フロントエンドのコピー機能について)
+- [📦 技術スタック](#-技術スタック)
+- [🔧 手動セットアップ方法](#-手動セットアップ方法)
+- [🛠️ トラブルシューティング](#-トラブルシューティング)
+- [⚠️ 既知の制約と今後の改善](#-既知の制約と今後の改善)
+- [📝 ライセンス / 貢献](#-ライセンス)
+
 <img width="1886" height="911" alt="スクリーンショット 2025-11-21 001811" src="https://github.com/user-attachments/assets/0afb4f2e-d7bc-47a3-9873-29d978cb39c5" />
 
 <img width="1894" height="920" alt="スクリーンショット 2025-11-21 001752" src="https://github.com/user-attachments/assets/128038b3-8aaf-4e39-8f65-f24eaf995e36" />
@@ -46,6 +59,7 @@ PC のネットワーク情報を確認・監視できる ローカル完結の�
   - PCAP形式（Wireshark対応の標準形式）
   - CSV形式（Excel/スプレッドシート対応）
 - 自動停止機能（指定パケット数到達時）
+ - 各パケットをワンクリックでJSONテキストとしてクリップボードへコピー（共有・ログ取りに便利）
 
 ### 💬 相談チャットボット
 - ネットワークやパケットキャプチャに関する質問にAIが即座に回答
@@ -53,6 +67,8 @@ PC のネットワーク情報を確認・監視できる ローカル完結の�
 - パケット統計データと連携した自動分析
 - 初心者向けのわかりやすい解説
 - トラブルシューティングや用語解説も対応
+ - OpenAI（ChatGPT）との連携に対応。ローカルで `OPENAI_API_KEY` を設定すると ChatGPT を使った応答が有効になります（`.env` または環境変数で設定）。
+ - 利用するモデルは `OPENAI_MODEL` 環境変数で切り替え可能（デフォルト: `gpt-5-mini`）。
 
 ## 🚀 簡単セットアップ（推奨）
 
@@ -83,6 +99,113 @@ PC のネットワーク情報を確認・監視できる ローカル完結の�
 # 管理者権限で実行
 .\start.ps1
 ```
+
+---
+
+## 🔐 ChatGPT (OpenAI) 設定
+
+ChatGPT と連携する場合、バックエンドで OpenAI の API キーを読み込む必要があります。プロジェクトの `backend/.env` に次のように追記してください：
+
+```dotenv
+OPENAI_API_KEY=sk-REPLACE_WITH_YOUR_KEY
+# 任意: 使用するモデル名（デフォルト gpt-5-mini）
+OPENAI_MODEL=gpt-5-mini
+```
+
+もしくは PowerShell セッションで環境変数をセットして起動することも可能です（セッション限定）：
+
+```powershell
+$env:OPENAI_API_KEY = 'sk-...'
+uvicorn app:app --reload --host 0.0.0.0 --port 5000
+```
+
+起動時に `.env` の読み込み状況をログに出力するようになっているため、サーバーの起動ログで `OPENAI_API_KEY loaded` の有無を確認してください。
+
+注意: APIキーは秘密情報です。公開リポジトリにコミットしないでください。キーを置きたくない場合は環境変数で管理してください。
+
+## 🧪 エンドポイント確認（開発者向けテスト手順）
+
+バックエンドが `http://localhost:5000` で起動していることを前提に、PowerShell / curl で簡単に動作確認できます。管理者権限が必要な操作（パケットキャプチャ開始など）は、管理者権限の PowerShell で実行してください。
+
+- キャプチャ開始（例: 任意インターフェース、自動選択可能）
+
+```powershell
+# インターフェース名を指定する場合（Windowsの例: "Ethernet" や "Wi-Fi"）
+$body = @{ interface = 'Wi-Fi'; count = 50 } | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://localhost:5000/api/capture/start' -Method Post -Body $body -ContentType 'application/json'
+
+# インターフェースを指定しないと自動選択される場合があります
+$body = @{ count = 50 } | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://localhost:5000/api/capture/start' -Method Post -Body $body -ContentType 'application/json'
+```
+
+- キャプチャ停止
+
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/capture/stop' -Method Post
+```
+
+- 統計情報を取得
+
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/capture/statistics' -Method Get | ConvertTo-Json -Depth 5
+```
+
+- チャットボット（テキスト問い合わせ）のテスト
+
+```powershell
+$body = @{ question = 'ネットワークに遅延がある場合、まず何を確認すべきですか？' } | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://localhost:5000/api/chatbot' -Method Post -Body $body -ContentType 'application/json' | ConvertTo-Json -Depth 5
+```
+
+curl での例（Linux/macOS または Windows の curl）:
+
+```bash
+curl -X POST http://localhost:5000/api/chatbot \
+  -H "Content-Type: application/json" \
+  -d '{"question":"ネットワークに遅延がある場合、まず何を確認すべきですか？"}'
+```
+
+期待するレスポンス例（JSON）:
+
+```json
+{
+  "answer": "...説明本文...",
+  "source": "openai"  // または "rule"（ローカルルールによるフォールバック）
+}
+```
+
+サーバーログに `[call_openai_chat]` や `[chatbot] Received question:` のようなログが出力されるようになっています。OpenAIに接続していない場合は `source: "rule"` が返る仕様です。
+
+## 🔧 環境変数一覧
+
+このプロジェクトで使用する主な環境変数の一覧です。`.env` に設定するか PowerShell / シェルの環境変数で指定してください。
+
+- `OPENAI_API_KEY` — OpenAI の API キー（省略すると ChatGPT 連携は無効化され、ローカルルールによる応答になります）。
+- `OPENAI_MODEL` — 利用するモデル（デフォルト: `gpt-5-mini`）。例: `gpt-5-mini`, `gpt-4o-mini` など。
+- `BACKEND_PORT` — バックエンドのポート（デフォルトは `5000` をコード内で利用）。
+- `LOG_LEVEL` — ログ出力レベル（`DEBUG`, `INFO`, `WARNING` など）。
+
+例（`backend/.env`）:
+
+```dotenv
+OPENAI_API_KEY=sk-REPLACE_WITH_YOUR_KEY
+OPENAI_MODEL=gpt-5-mini
+# 他の設定は必要に応じて追加
+```
+
+---
+
+## 📋 フロントエンドの「コピー」機能について
+
+フロントエンドには以下のコピー機能があります:
+
+- 各パケット行ごとの「コピー」ボタン: パケットの詳細を JSON テキストとしてクリップボードにコピーできます（`PacketCapture` の UI）。
+- 統計データ全体のコピー: `Packet Analysis` ページに「📋 統計をコピー」ボタンを追加しました。統計オブジェクト全体を整形済みJSONでコピーします。
+
+ブラウザで `navigator.clipboard` が利用できない環境では、自動的にテキストエリアを使ったフォールバックコピーを行います。コピー成功/失敗の短いフィードバックが画面に表示されます。
+
+必要であれば「セクションごと（プロトコル分布、トップトーカー等）のコピー」や「CSVクリップボード出力」などを追加できます。要望があれば教えてください。
 
 ---
 
@@ -289,6 +412,23 @@ uvicorn app:app --host 0.0.0.0 --port 5000 --reload
 - ✅ **高速API**: FastAPIベースで高パフォーマンス
 - ✅ **自動API文書**: `http://localhost:5000/docs` でSwagger UI利用可能
 
+## ⚠️ 既知の制約と今後の改善
+
+現状把握のための既知の制約と、今後取り組みたい改善案をまとめます。
+
+- Windows優先: 一部の WiFi 関連機能は Windows 向けに実装されています。macOS/Linux での WiFi 情報収集は限定的です。
+- 管理者権限: パケットキャプチャ（scapy/WinPcapなど）には管理者権限が必要です。非特権ユーザーでの動作は保証されません。
+- OpenAI 呼び出し: 現状は同期リクエストをスレッドで回しており、将来的に `httpx` 等の非同期クライアントへ移行して応答性能と信頼性を改善したいです。
+- テストカバレッジ: 自動化されたユニットテストやE2Eテストは限定的です。CI パイプライン（GitHub Actions等）によるテスト導入を計画しています。
+
+改善案（優先順）:
+
+1. OpenAI 呼び出しを非同期化してタイムアウトと再試行を明確にする
+2. セクション毎の「コピー」機能（プロトコル分布だけ、トップトーカーだけ等）を実装
+3. キャプチャ設定を GUI で永続化（プリセット保存）
+4. テストと CI の整備（ユニット + E2E）
+
+
 ## 🔒 セキュリティについて
 
 - このツールはローカルネットワークの情報を取得します
@@ -333,6 +473,15 @@ uvicorn app:app --host 0.0.0.0 --port 5000 --reload
 - コンポーネント: `frontend/src/components/` (各機能別に分離)
 - セットアップスクリプト: `setup-backend.ps1`, `setup-frontend.ps1`
 - 起動スクリプト: `start-backend.ps1`, `start-frontend.ps1`, `start.ps1`
+
+## スクリプト一覧（何をするか）
+
+- `setup-backend.ps1` — バックエンド用の仮想環境作成、依存パッケージのインストールを行います。
+- `setup-frontend.ps1` — フロントエンドの `npm install` を実行します。
+- `start-backend.ps1` — 管理者権限でのバックエンド起動を補助するショートカット（内部で `uvicorn` を呼びます）。
+- `start-frontend.ps1` — `npm start` を実行してフロントエンドを起動します。
+- `start.ps1` — フロントエンドとバックエンドを一度に立ち上げるユーティリティ（管理者権限に注意）。
+
 
 **APIドキュメント**:
 バックエンド起動後、以下のURLでAPI仕様書を確認できます：

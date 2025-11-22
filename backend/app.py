@@ -7,11 +7,29 @@ import socket
 import platform
 import psutil
 from datetime import datetime
-from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap
 import threading
 import json
 import os
 import tempfile
+from fastapi import Request
+import asyncio
+import requests
+from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap
+from dotenv import load_dotenv
+from pathlib import Path
+
+# 明示的に backend フォルダの .env を読み込む
+env_path = Path(__file__).resolve().parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
+env_exists = env_path.exists()
+print(f"[config] .env path={env_path} exists={env_exists}")
+_api = os.getenv('OPENAI_API_KEY')
+if _api:
+    masked = _api[:8] + '...' + _api[-8:]
+    print(f"[config] OPENAI_API_KEY loaded (masked)={masked}")
+else:
+    print('[config] OPENAI_API_KEY not set')
 
 app = FastAPI(title="Network Monitor API", version="1.0.0")
 
@@ -35,11 +53,6 @@ stop_capture_flag = False
 # エクスポート用ディレクトリ
 EXPORT_DIR = tempfile.gettempdir()
 
-# Pydanticモデル
-class CaptureRequest(BaseModel):
-    interface: Optional[str] = None
-    count: int = 100
-
 def get_network_info():
     """ネットワーク情報を取得"""
     info = {
@@ -59,6 +72,7 @@ def get_network_info():
                 'ipv6': [],
                 'mac': []
             }
+            
             
             for addr in addrs:
                 if addr.family == socket.AF_INET:
@@ -486,7 +500,7 @@ def capture_packets_thread(interface, packet_count):
             prn=packet_callback, 
             count=packet_count, 
             store=False,
-            timeout=60,
+            timeout=360,
             stop_filter=should_stop
         )
         print(f"パケットキャプチャ終了: {len(capture_packets)}個のパケットを収集しました")
@@ -516,53 +530,38 @@ async def network_stats():
     return get_network_stats()
 
 @app.post("/api/capture/start")
-async def start_capture(request: CaptureRequest):
+async def start_capture(request: Request):
     """パケットキャプチャを開始"""
-    global is_capturing, capture_thread, capture_packets, capture_raw_packets, capture_session_id, stop_capture_flag
-    
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    interface = data.get('interface') if isinstance(data, dict) else None
+    packet_count = int(data.get('count', 100)) if isinstance(data, dict) else 100
+
+    global is_capturing, capture_thread, capture_session_id, capture_packets, capture_raw_packets, stop_capture_flag
+
     if is_capturing:
-        raise HTTPException(status_code=400, detail='キャプチャは既に実行中です')
-    
+        return {'message': 'すでにキャプチャが実行中です', 'status': 'already_running'}
+
+    # 初期化
     capture_packets = []
     capture_raw_packets = []
     capture_session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
     stop_capture_flag = False
     is_capturing = True
-    
-    capture_thread = threading.Thread(
-        target=capture_packets_thread,
-        args=(request.interface, request.count)
-    )
-    capture_thread.start()
-    
-    return {
-        'message': 'キャプチャを開始しました', 
-        'status': 'started',
-        'session_id': capture_session_id
-    }
 
-@app.post("/api/capture/stop")
-async def stop_capture():
-    """パケットキャプチャを停止"""
-    global is_capturing, stop_capture_flag, capture_thread
-    
-    if not is_capturing:
-        return {'message': 'キャプチャは実行されていません', 'status': 'not_running'}
-    
-    print("停止リクエストを受信しました")
-    
-    stop_capture_flag = True
-    is_capturing = False
-    
-    if capture_thread and capture_thread.is_alive():
-        capture_thread.join(timeout=2.0)
-    
-    print(f"キャプチャを停止しました。収集パケット数: {len(capture_packets)}")
-    
+    capture_thread = threading.Thread(target=capture_packets_thread, args=(interface, packet_count), daemon=True)
+    capture_thread.start()
+
+    print(f"キャプチャ開始: session={capture_session_id}, interface={interface}, target_count={packet_count}")
+
     return {
-        'message': 'キャプチャを停止しました', 
-        'status': 'stopped',
-        'packet_count': len(capture_packets)
+        'message': 'キャプチャを開始しました',
+        'status': 'started',
+        'session_id': capture_session_id,
+        'target_count': packet_count
     }
 
 @app.get("/api/capture/packets")
@@ -961,6 +960,45 @@ def get_recommendation(score, reasons):
     else:
         return '👀 監視推奨: 異常な通信パターンが見られます'
 
+
+async def call_openai_chat(messages):
+    """OpenAI Chat Completions を呼び出す（同期 requests をスレッドで実行）。"""
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return None, 'OPENAI_API_KEY is not set'
+    print('[call_openai_chat] Calling OpenAI API...')
+
+    def _sync_call():
+        try:
+            # モデルは環境変数で切り替え可能（デフォルト: gpt-5-mini）
+            model_name = os.getenv('OPENAI_MODEL') or os.getenv('OPENAI_MODEL_NAME') or 'gpt-5-mini'
+            print(f"[call_openai_chat] Using model: {model_name}")
+
+            resp = requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': model_name,
+                    'messages': messages,
+                    # 'max_tokens': 512,
+                    # 'temperature': 0.2
+                },
+                timeout=360
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data['choices'][0]['message']['content'] if data.get('choices') else None
+            print('[call_openai_chat] OpenAI response received, content length:', len(content) if content else 0)
+            return content, None
+        except Exception as e:
+            print(f"[call_openai_chat] OpenAI request exception: {e}")
+            return None, str(e)
+
+    return await asyncio.to_thread(_sync_call)
+
 @app.get("/api/capture/statistics/export")
 async def export_statistics():
     """統計データをJSONファイルとしてエクスポート"""
@@ -1173,6 +1211,67 @@ async def export_csv(background_tasks: BackgroundTasks):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f'エクスポートに失敗しました: {str(e)}')
+
+@app.post("/api/chatbot")
+async def chatbot(request: Request):
+    """相談チャットボットAPI: 質問を受けて回答を返す"""
+    data = await request.json()
+    question_raw = data.get('question', '')
+    question = question_raw.lower()
+    print(f"[chatbot] Received question: {question_raw}")
+
+    # 統計データ取得
+    stats = await get_capture_statistics()
+
+    # まず、OpenAI（ChatGPT）に問い合わせ可能なら優先して使用する
+    if os.getenv('OPENAI_API_KEY'):
+        stats_summary = (
+            f"現在のキャプチャパケット数: {stats.get('total_packets', 0)}。"
+            f"異常警告数: {len(stats.get('anomaly_detection', {}).get('warnings', []))}。"
+        )
+        system_prompt = (
+            "あなたはネットワーク解析とパケットキャプチャの専門家です。"
+            "ユーザーの質問に簡潔に、かつ技術的に正確に答えてください。"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": stats_summary + "\n\nユーザーの質問: " + question_raw}
+        ]
+
+        answer, err = await call_openai_chat(messages)
+        if answer:
+            print('[chatbot] Responding with OpenAI answer')
+            return {"answer": answer, "source": "openai"}
+        else:
+            print(f"[chatbot] OpenAI request failed: {err}")
+
+    # OpenAIが使えない/失敗した場合はルールベース応答を返す
+    if 'パケットキャプチャ' in question and ('とは' in question or '何' in question):
+        return {"answer": "パケットキャプチャはネットワーク上のデータパケットを記録・解析する技術です。\n\nこのアプリでは「パケットキャプチャ」タブで簡単にキャプチャできます。", "source": "rule"}
+    if '統計' in question or '分析' in question:
+        if stats and stats.get('total_packets', 0) > 0:
+            return {"answer": f"現在のキャプチャ統計:\nパケット数: {stats['total_packets']}\nプロトコル分布: {stats['protocol_distribution']}\n異常検知: {len(stats.get('anomaly_detection', {}).get('warnings', []))}件の警告があります。", "source": "rule"}
+        else:
+            return {"answer": "まだパケットキャプチャが実行されていません。まずキャプチャを開始してください。", "source": "rule"}
+    if 'tcp' in question and 'udp' in question:
+        return {"answer": "TCPは信頼性重視、UDPは速度重視の通信方式です。用途に応じて使い分けます。", "source": "rule"}
+    if 'https' in question or 'ssl' in question or 'tls' in question:
+        return {"answer": "HTTPSはSSL/TLSによる暗号化通信です。安全ですが、証明書の有効性も確認しましょう。", "source": "rule"}
+    if 'ポート' in question and ('何' in question or 'とは' in question):
+        return {"answer": "ポート番号はPC内のサービスを識別する番号です。\n例: 80=HTTP, 443=HTTPS, 22=SSH", "source": "rule"}
+    if '不審' in question and 'ポート' in question:
+        return {"answer": "不審なポート番号（例: 1337, 4444, 6667など）が検出された場合は注意が必要です。\n統計解析タブで自動検出できます。", "source": "rule"}
+    if 'エラー' in question or 'できない' in question or '失敗' in question or '問題' in question:
+        return {"answer": "管理者権限で実行していますか？\nバックエンド・フロントエンドが両方起動しているか確認してください。", "source": "rule"}
+
+    # デフォルト応答（より案内的にする）
+    return {"answer": "ご質問ありがとうございます。もう少し具体的に教えてください（例: 'パケットキャプチャの始め方'、'特定のIPの通信を調べたい' など）。もしくは右上のよくある質問ボタンを使ってみてください。", "source": "default"}
+
+@app.get("/api/chatbot")
+async def chatbot_test():
+    """チャットボットAPIの疎通テスト用"""
+    return {"status": "ok", "message": "chatbot endpoint is working"}
 
 if __name__ == '__main__':
     import uvicorn

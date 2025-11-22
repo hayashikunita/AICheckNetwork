@@ -6,12 +6,14 @@ function PacketAnalysis() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [copyStatus, setCopyStatus] = useState('');
 
   const fetchStatistics = async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await axios.get('/api/capture/statistics');
+      const response = await axios.get('http://localhost:5000/api/capture/statistics');
       setStatistics(response.data);
     } catch (err) {
       setError('統計情報の取得に失敗しました: ' + err.message);
@@ -24,7 +26,7 @@ function PacketAnalysis() {
   const exportStatistics = async () => {
     setExporting(true);
     try {
-      const response = await axios.get('/api/capture/statistics/export', {
+      const response = await axios.get('http://localhost:5000/api/capture/statistics/export', {
         responseType: 'blob'
       });
       
@@ -164,11 +166,53 @@ function PacketAnalysis() {
           >
             {exporting ? '📥 エクスポート中...' : '📥 統計データをエクスポート'}
           </button>
+          <button
+            className="button"
+            onClick={async () => {
+              // 一時的な状態制御
+              setCopying(true);
+              setCopyStatus('');
+              try {
+                const jsonText = JSON.stringify(statistics, null, 2);
+                if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+                  await navigator.clipboard.writeText(jsonText);
+                } else {
+                  // フォールバック: テキストエリアを作って選択・コピー
+                  const ta = document.createElement('textarea');
+                  ta.value = jsonText;
+                  ta.style.position = 'fixed';
+                  ta.style.left = '-9999px';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  ta.remove();
+                }
+                setCopyStatus('✅ コピーしました');
+                // フィードバックを短時間表示
+                setTimeout(() => setCopyStatus(''), 2500);
+              } catch (err) {
+                console.error('Copy statistics error:', err);
+                setCopyStatus('✖ コピーに失敗しました');
+                setTimeout(() => setCopyStatus(''), 3000);
+              } finally {
+                setCopying(false);
+              }
+            }}
+            disabled={copying}
+            style={{ backgroundColor: copying ? '#95a5a6' : '#007bff' }}
+          >
+            {copying ? 'コピー中...' : '📋 統計をコピー'}
+          </button>
           <button className="button" onClick={fetchStatistics}>
             🔄 更新
           </button>
         </div>
       </div>
+      {copyStatus && (
+        <div style={{ marginTop: '8px', color: copyStatus.startsWith('✅') ? '#28a745' : '#dc3545' }}>
+          {copyStatus}
+        </div>
+      )}
 
       {/* 概要カード */}
       <div style={{ 

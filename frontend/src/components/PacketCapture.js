@@ -9,6 +9,7 @@ function PacketCapture() {
   const [packetCount, setPacketCount] = useState(100);
   const [sessionId, setSessionId] = useState(null);
   const [pollInterval, setPollInterval] = useState(null);
+  const [copiedIndex, setCopiedIndex] = useState(null);
 
   const fetchPackets = async () => {
     try {
@@ -309,9 +310,37 @@ function PacketCapture() {
                       </span>
                     )}
                   </div>
-                  <span style={{ fontSize: '0.85rem', color: '#666' }}>
-                    {new Date(packet.timestamp).toLocaleTimeString('ja-JP')}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '0.85rem', color: '#666' }}>
+                      {new Date(packet.timestamp).toLocaleTimeString('ja-JP')}
+                    </span>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const text = JSON.stringify(packet, null, 2);
+                          if (navigator.clipboard && navigator.clipboard.writeText) {
+                            await navigator.clipboard.writeText(text);
+                          } else {
+                            // Fallback
+                            const ta = document.createElement('textarea');
+                            ta.value = text;
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            ta.parentNode.removeChild(ta);
+                          }
+                          setCopiedIndex(index);
+                          setTimeout(() => setCopiedIndex(null), 2000);
+                        } catch (e) {
+                          console.error('コピーに失敗しました', e);
+                        }
+                      }}
+                      className="button"
+                      style={{ padding: '6px 10px', fontSize: '12px' }}
+                    >
+                      {copiedIndex === index ? '✅ Copied' : '📋 コピー'}
+                    </button>
+                  </div>
                 </div>
                 
                 <div className="packet-details">
