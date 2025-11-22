@@ -1,11 +1,14 @@
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import socket
+import ipaddress
 import platform
 import psutil
 from datetime import datetime
 from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap, AsyncSniffer
 import time
+import subprocess
+import shutil
 import threading
 import json
 import os
@@ -72,6 +75,33 @@ def get_network_info():
         info['error'] = str(e)
     
     return info
+
+
+def scan_subnet_for_hosts(cidr, timeout=2):
+    try:
+        from scapy.all import Ether, ARP, srp
+        answered, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=str(cidr)), timeout=timeout, verbose=False)
+        hosts = []
+        for snd, rcv in answered:
+            ip = rcv.psrc
+            mac = rcv.hwsrc
+            hosts.append({'ip': ip, 'mac': mac})
+        return hosts
+    except Exception as e:
+        print(f"scan_subnet_for_hosts error: {e}")
+        return []
+
+
+def check_open_ports(ip, ports, timeout=0.5):
+    open_ports = []
+    import socket as pysocket
+    for port in ports:
+        try:
+            with pysocket.create_connection((ip, port), timeout=timeout):
+                open_ports.append(port)
+        except Exception:
+            continue
+    return open_ports
 
 def get_wifi_info():
     """WiFi情報を取得（Windows専用）"""
@@ -539,6 +569,157 @@ def wifi_info():
 def network_stats():
     """ネットワーク統計のエンドポイント"""
     return jsonify(get_network_stats())
+
+
+@app.route('/api/network/scan', methods=['GET'])
+def network_scan():
+    """Scan local network devices on one or all interfaces and lightly check ports.
+    Query params (optional): interface, ports (comma-separated), limit (hosts per interface)
+    """
+    interface = request.args.get('interface')
+    ports_param = request.args.get('ports')
+    limit = int(request.args.get('limit', 256))
+
+    default_ports = [22, 80, 443, 3389, 3306, 53, 8080]
+    ports_list = default_ports
+    if ports_param:
+        try:
+            ports_list = [int(p.strip()) for p in ports_param.split(',') if p.strip()]
+        except Exception:
+            ports_list = default_ports
+
+    results = []
+    try:
+        net_if_addrs = psutil.net_if_addrs()
+        net_if_stats = psutil.net_if_stats()
+        for ifname, addrs in net_if_addrs.items():
+            if interface and ifname != interface:
+                continue
+            if ifname in net_if_stats and not net_if_stats[ifname].isup:
+                continue
+
+            ipv4_addr = None
+            netmask = None
+            for a in addrs:
+                if a.family == socket.AF_INET:
+                    ipv4_addr = a.address
+                    netmask = a.netmask
+                    break
+
+            if not ipv4_addr or not netmask:
+                continue
+
+            try:
+                network = ipaddress.ip_network(f"{ipv4_addr}/{netmask}", strict=False)
+            except Exception:
+                network = ipaddress.ip_network(f"{ipv4_addr}/24", strict=False)
+
+            hosts = list(network.hosts())
+            if len(hosts) > limit:
+                if network.prefixlen < 24:
+                    net24 = ipaddress.ip_network(f"{ipv4_addr}/24", strict=False)
+                    hosts = list(net24.hosts())[:limit]
+                else:
+                    hosts = hosts[:limit]
+
+            cidr = f"{network.network_address}/{network.prefixlen}"
+            discovered = scan_subnet_for_hosts(cidr)
+
+            for d in discovered:
+                ip = d['ip']
+                d['open_ports'] = check_open_ports(ip, ports_list)
+
+            results.append({
+                'interface': ifname,
+                'address': ipv4_addr,
+                'netmask': netmask,
+                'network': str(network),
+                'discovered': discovered,
+            })
+
+        return jsonify({'status': 'ok', 'results': results})
+    except Exception as e:
+        print(f"network_scan error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def run_command_safe(cmd_list, timeout=10):
+    try:
+        if shutil.which(cmd_list[0]) is None:
+            return {'error': f'command not found: {cmd_list[0]}', 'stdout': '', 'stderr': ''}
+
+        proc = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout)
+        return {'returncode': proc.returncode, 'stdout': proc.stdout, 'stderr': proc.stderr}
+    except subprocess.TimeoutExpired:
+        return {'error': 'timeout', 'stdout': '', 'stderr': ''}
+    except Exception as e:
+        return {'error': str(e), 'stdout': '', 'stderr': ''}
+
+
+@app.route('/api/diagnostics', methods=['GET'])
+def diagnostics():
+    system = platform.system().lower()
+    commands = []
+    if system == 'windows':
+        commands = [
+            ('ipconfig', ['ipconfig','/all']),
+            ('netstat', ['netstat','-an']),
+            ('arp', ['arp','-a']),
+            ('route', ['route','print']),
+            ('nslookup', ['nslookup','google.com']),
+            ('tracert', ['tracert','-d','8.8.8.8']),
+            ('ping', ['ping','-n','4','8.8.8.8'])
+        ]
+    else:
+        commands = [
+            ('ifconfig', ['ifconfig']),
+            ('ip_addr', ['ip','addr']),
+            ('netstat', ['netstat','-an']),
+            ('arp', ['arp','-a']),
+            ('route', ['ip','route']),
+            ('nslookup', ['nslookup','google.com']),
+            ('traceroute', ['traceroute','-n','8.8.8.8']),
+            ('ping', ['ping','-c','4','8.8.8.8']),
+        ]
+
+    results = {}
+    for name, cmd in commands:
+        results[name] = run_command_safe(cmd, timeout=15)
+
+    return jsonify({'status': 'ok', 'system': system, 'results': results})
+
+
+@app.route('/api/diagnostics/<name>', methods=['GET'])
+def diagnostics_one(name):
+    system = platform.system().lower()
+    known = {}
+    if system == 'windows':
+        known = {
+            'ipconfig': ['ipconfig','/all'],
+            'netstat': ['netstat','-an'],
+            'arp': ['arp','-a'],
+            'route': ['route','print'],
+            'nslookup': ['nslookup','google.com'],
+            'tracert': ['tracert','-d','8.8.8.8'],
+            'ping': ['ping','-n','4','8.8.8.8']
+        }
+    else:
+        known = {
+            'ifconfig': ['ifconfig'],
+            'ip_addr': ['ip','addr'],
+            'netstat': ['netstat','-an'],
+            'arp': ['arp','-a'],
+            'route': ['ip','route'],
+            'nslookup': ['nslookup','google.com'],
+            'traceroute': ['traceroute','-n','8.8.8.8'],
+            'ping': ['ping','-c','4','8.8.8.8']
+        }
+
+    cmd = known.get(name)
+    if not cmd:
+        return jsonify({'error': 'unknown diagnostic command'}), 404
+
+    return jsonify(run_command_safe(cmd, timeout=20))
 
 @app.route('/api/capture/start', methods=['POST'])
 def start_capture():

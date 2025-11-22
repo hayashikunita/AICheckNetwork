@@ -6,6 +6,8 @@ import NetworkStats from './components/NetworkStats';
 import PacketCapture from './components/PacketCapture';
 import PacketAnalysis from './components/PacketAnalysis';
 import PacketChatbot from './components/PacketChatbot';
+import NetworkDiagnostics from './components/NetworkDiagnostics';
+import NetworkDevices from './components/NetworkDevices';
 import './App.css';
 
 function App() {
@@ -44,10 +46,22 @@ function App() {
           🔍 パケットキャプチャ
         </button>
         <button
+          className={activeTab === 'devices' ? 'active' : ''}
+          onClick={() => setActiveTab('devices')}
+        >
+          🖧 デバイススキャン
+        </button>
+        <button
           className={activeTab === 'analysis' ? 'active' : ''}
           onClick={() => setActiveTab('analysis')}
         >
           📈 統計解析
+        </button>
+        <button
+          className={activeTab === 'diagnostics' ? 'active' : ''}
+          onClick={() => setActiveTab('diagnostics')}
+        >
+          🧰 診断コマンド
         </button>
         <button
           className={activeTab === 'chatbot' ? 'active' : ''}
@@ -62,8 +76,10 @@ function App() {
         {activeTab === 'wifi' && <WiFiInfo />}
         {activeTab === 'stats' && <NetworkStats />}
         {activeTab === 'capture' && <PacketCapture />}
+        {activeTab === 'devices' && <NetworkDevices />}
         {activeTab === 'analysis' && <PacketAnalysis />}
         {activeTab === 'chatbot' && <PacketChatbot />}
+        {activeTab === 'diagnostics' && <NetworkDiagnostics />}
       </main>
 
       <footer className="App-footer">

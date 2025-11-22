@@ -10,6 +10,8 @@ PC のネットワーク情報を確認・監視できる ローカル完結の�
 
 - [✨ 主な機能](#-主な機能)
 - [🚀 簡単セットアップ（推奨）](#-簡単セットアップ推奨)
+ - [🖧 ネットワークデバイススキャン](#-ネットワークデバイススキャン)
+ - [🧰 診断コマンド表示 (netstat / ipconfig 等)](#-診断コマンド表示-netstat--ipconfig-等)
 - [🧪 エンドポイント確認（開発者向けテスト手順）](#-エンドポイント確認開発者向けテスト手順)
 - [🔐 ChatGPT (OpenAI) 設定](#-chatgpt-openai-設定)
 - [📋 フロントエンドの「コピー」機能について](#-フロントエンドのコピー機能について)
@@ -192,6 +194,62 @@ curl -X POST http://localhost:5000/api/chatbot \
   -H "Content-Type: application/json" \
   -d '{"question":"ネットワークに遅延がある場合、まず何を確認すべきですか？"}'
 ```
+
+### ネットワークデバイススキャン
+
+フロントエンドの「デバイススキャン」ページから、ローカルネットワーク上の機器を自動検出できます。
+
+API 経由で試す場合（例）:
+
+```powershell
+# 全インターフェースをスキャン（デフォルトのチェックポート: 22,80,443,3389,3306,53,8080）
+Invoke-RestMethod -Uri 'http://localhost:5000/api/network/scan' -Method Get
+
+# 指定ポートとホスト制限を指定
+Invoke-RestMethod -Uri 'http://localhost:5000/api/network/scan?ports=22,80,443&limit=128' -Method Get
+```
+
+戻り値の形式（JSON）:
+
+```json
+{
+  "status": "ok",
+  "results": [
+    {
+      "interface": "Wi-Fi",
+      "address": "192.168.1.10",
+      "netmask": "255.255.255.0",
+      "network": "192.168.1.0/24",
+      "discovered": [
+        {"ip": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff", "open_ports": [80,443]}
+      ]
+    }
+  ]
+}
+```
+
+注意：ARP ベースのスキャンと TCP 接続による簡易ポートチェックを行います。管理者権限や OS によっては動作しない/制限される可能性があります。大きなサブネットをスキャンすると時間がかかるため、`limit` パラメータで上限を調整してください。
+
+## 🧰 診断コマンド表示 (netstat / ipconfig 等)
+
+フロントエンドの "診断コマンド" タブから、ローカルホストで利用可能な代表的な診断コマンド群を実行し、その出力を取得して表示します。実行するコマンドは固定されたリストのみで、任意コマンド実行は許可されていません（セキュリティ対策）。
+
+利用可能なコマンド（環境により一部コマンドは無い場合があります）:
+
+- Windows: ipconfig /all, netstat -an, arp -a, route print, nslookup, tracert, ping
+- Unix/Linux/macOS: ifconfig, ip addr, netstat -an, arp -a, ip route, nslookup, traceroute, ping
+
+API 例:
+
+```powershell
+# 全コマンドを実行して出力を取得
+Invoke-RestMethod -Uri 'http://localhost:5000/api/diagnostics' -Method Get
+
+# 個別コマンドを実行（例: netstat）
+Invoke-RestMethod -Uri 'http://localhost:5000/api/diagnostics/netstat' -Method Get
+```
+
+注意: これらのコマンド実行はバックエンド側で行われます。管理者権限やシステム環境に依存するため、実行できないコマンドがあること、また大きな出力が返ることを想定して UI では折りたたみやプリフォーマット表示を行っています。
 
 期待するレスポンス例（JSON）:
 

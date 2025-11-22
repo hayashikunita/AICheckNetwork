@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import socket
+import ipaddress
 import platform
 import psutil
 from datetime import datetime
@@ -15,6 +16,8 @@ from fastapi import Request
 import asyncio
 import requests
 from scapy.all import sniff, IP, TCP, UDP, ICMP, ARP, wrpcap, AsyncSniffer
+import subprocess
+import shutil
 import time
 from dotenv import load_dotenv
 from pathlib import Path
@@ -102,6 +105,36 @@ def get_network_info():
         info['error'] = str(e)
     
     return info
+
+
+def scan_subnet_for_hosts(cidr, timeout=2):
+    """Use ARP to discover hosts in a given CIDR block. Returns list of (ip, mac)."""
+    try:
+        # Use srp with broadcast Ethernet and ARP request
+        from scapy.all import Ether, ARP, srp
+        answered, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=str(cidr)), timeout=timeout, verbose=False)
+        hosts = []
+        for snd, rcv in answered:
+            ip = rcv.psrc
+            mac = rcv.hwsrc
+            hosts.append({'ip': ip, 'mac': mac})
+        return hosts
+    except Exception as e:
+        print(f"scan_subnet_for_hosts error: {e}")
+        return []
+
+
+def check_open_ports(ip, ports, timeout=0.5):
+    """Lightweight TCP connect scan for given ports, return list of open ports."""
+    open_ports = []
+    import socket as pysocket
+    for port in ports:
+        try:
+            with pysocket.create_connection((ip, port), timeout=timeout):
+                open_ports.append(port)
+        except Exception:
+            continue
+    return open_ports
 
 def get_wifi_info():
     """WiFi情報を取得（Windows専用）"""
@@ -535,7 +568,14 @@ def capture_packets_thread(interface, packet_count):
 @app.get("/api/network-info")
 async def network_info():
     """ネットワーク情報のエンドポイント"""
-    return get_network_info()
+    try:
+        data = get_network_info()
+        return data
+    except Exception as e:
+        import traceback as _tb
+        tb = _tb.format_exc()
+        print(f"network_info error: {e}\n{tb}")
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb})
 
 @app.get("/api/wifi-info")
 async def wifi_info():
@@ -581,6 +621,176 @@ async def start_capture(request: Request):
         'session_id': capture_session_id,
         'target_count': packet_count
     }
+
+
+@app.get("/api/network/scan")
+async def network_scan(interface: Optional[str] = None, ports: Optional[str] = None, limit: int = 256):
+    """Scan local network devices on one or all interfaces and lightly check open ports.
+
+    Query params:
+    - interface: optional interface name to scan only
+    - ports: optional comma-separated port list to check (default common ports)
+    - limit: max hosts to scan per interface (default 256)
+    """
+    # Parse ports
+    default_ports = [22, 80, 443, 3389, 3306, 53, 8080]
+    ports_list = default_ports
+    if ports:
+        try:
+            ports_list = [int(p.strip()) for p in ports.split(',') if p.strip()]
+        except Exception:
+            ports_list = default_ports
+
+    results = []
+    try:
+        net_if_addrs = psutil.net_if_addrs()
+        net_if_stats = psutil.net_if_stats()
+        for ifname, addrs in net_if_addrs.items():
+            if interface and ifname != interface:
+                continue
+            # Only consider interfaces that are up
+            if ifname in net_if_stats and not net_if_stats[ifname].isup:
+                continue
+
+            ipv4_addr = None
+            netmask = None
+            for a in addrs:
+                if a.family == socket.AF_INET:
+                    ipv4_addr = a.address
+                    netmask = a.netmask
+                    break
+
+            if not ipv4_addr or not netmask:
+                continue
+
+            # Construct network and limit size
+            try:
+                network = ipaddress.ip_network(f"{ipv4_addr}/{netmask}", strict=False)
+            except Exception:
+                # fallback to /24
+                network = ipaddress.ip_network(f"{ipv4_addr}/24", strict=False)
+
+            hosts = list(network.hosts())
+            # limit size for safety
+            if len(hosts) > limit:
+                # try to narrow to /24 centered around host if network larger
+                if network.prefixlen < 24:
+                    net24 = ipaddress.ip_network(f"{ipv4_addr}/24", strict=False)
+                    hosts = list(net24.hosts())[:limit]
+                else:
+                    hosts = hosts[:limit]
+
+            cidr = f"{network.network_address}/{network.prefixlen}"
+
+            # Discover via ARP (fast)
+            discovered = scan_subnet_for_hosts(cidr)
+
+            # Check ports
+            for d in discovered:
+                ip = d['ip']
+                d['open_ports'] = check_open_ports(ip, ports_list)
+
+            results.append({
+                'interface': ifname,
+                'address': ipv4_addr,
+                'netmask': netmask,
+                'network': str(network),
+                'discovered': discovered,
+            })
+
+        return {'status': 'ok', 'results': results}
+    except Exception as e:
+        print(f"network_scan error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def run_command_safe(cmd_list, timeout=10):
+    """Run a command safely (list) and return stdout/stderr and returncode."""
+    try:
+        # Ensure command is available
+        if shutil.which(cmd_list[0]) is None:
+            return {'error': f'command not found: {cmd_list[0]}', 'stdout': '', 'stderr': ''}
+
+        proc = subprocess.run(cmd_list, capture_output=True, text=True, timeout=timeout)
+        return {'returncode': proc.returncode, 'stdout': proc.stdout, 'stderr': proc.stderr}
+    except subprocess.TimeoutExpired:
+        return {'error': 'timeout', 'stdout': '', 'stderr': ''}
+    except Exception as e:
+        return {'error': str(e), 'stdout': '', 'stderr': ''}
+
+
+@app.get('/api/diagnostics')
+async def diagnostics():
+    """Run a set of predefined diagnostic commands and return outputs.
+
+    This endpoint runs a safe, fixed list of commands — no arbitrary command execution.
+    """
+    system = platform.system().lower()
+    commands = []
+    # Windows commands
+    if system == 'windows':
+        commands = [
+            ('ipconfig', ['ipconfig', '/all']),
+            ('netstat', ['netstat', '-an']),
+            ('arp', ['arp', '-a']),
+            ('route', ['route', 'print']),
+            ('nslookup', ['nslookup', 'google.com']),
+            ('tracert', ['tracert', '-d', '8.8.8.8']),
+            ('ping', ['ping', '-n', '4', '8.8.8.8']),
+        ]
+    else:
+        # unix/linux/mac
+        commands = [
+            ('ifconfig', ['ifconfig']),
+            ('ip_addr', ['ip', 'addr']),
+            ('netstat', ['netstat', '-an']),
+            ('arp', ['arp', '-a']),
+            ('route', ['ip', 'route']),
+            ('nslookup', ['nslookup', 'google.com']),
+            ('traceroute', ['traceroute', '-n', '8.8.8.8']),
+            ('ping', ['ping', '-c', '4', '8.8.8.8']),
+        ]
+
+    results = {}
+    for name, cmd in commands:
+        out = run_command_safe(cmd, timeout=15)
+        results[name] = out
+
+    return { 'status': 'ok', 'system': system, 'results': results }
+
+
+@app.get('/api/diagnostics/{name}')
+async def diagnostics_one(name: str):
+    """Run a single named diagnostic command from the known list."""
+    system = platform.system().lower()
+    known = {}
+    if system == 'windows':
+        known = {
+            'ipconfig': ['ipconfig', '/all'],
+            'netstat': ['netstat','-an'],
+            'arp': ['arp','-a'],
+            'route': ['route','print'],
+            'nslookup': ['nslookup','google.com'],
+            'tracert': ['tracert','-d','8.8.8.8'],
+            'ping': ['ping','-n','4','8.8.8.8']
+        }
+    else:
+        known = {
+            'ifconfig': ['ifconfig'],
+            'ip_addr': ['ip','addr'],
+            'netstat': ['netstat','-an'],
+            'arp': ['arp','-a'],
+            'route': ['ip','route'],
+            'nslookup': ['nslookup','google.com'],
+            'traceroute': ['traceroute','-n','8.8.8.8'],
+            'ping': ['ping','-c','4','8.8.8.8']
+        }
+
+    cmd = known.get(name)
+    if not cmd:
+        raise HTTPException(status_code=404, detail='unknown diagnostic command')
+
+    return run_command_safe(cmd, timeout=20)
 
 
 @app.post("/api/capture/stop")
